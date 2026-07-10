@@ -1,4 +1,4 @@
-import { formatDate } from '../lib/utils';
+import { formatDate } from "../lib/utils";
 import { createFileRoute } from "@tanstack/react-router";
 import { SiteShell } from "@/components/site/SiteShell";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -117,7 +117,9 @@ function EventsPage() {
                     <div
                       className={`neu-border ${colors[index % colors.length]} px-4 py-3 text-center font-mono text-xs font-bold`}
                     >
-                      {e.event_date ? formatDate(e.event_date).split(" at ")[0].toUpperCase() : "TBA"}
+                      {e.event_date
+                        ? formatDate(e.event_date).split(" at ")[0].toUpperCase()
+                        : "TBA"}
                     </div>
                     <span className="neu-border bg-cream px-2 py-1 font-mono text-[10px] font-bold uppercase">
                       Event
