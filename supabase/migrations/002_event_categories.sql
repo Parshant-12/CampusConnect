@@ -19,6 +19,14 @@ CREATE TABLE IF NOT EXISTS event_categories (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Enable Row Level Security
+ALTER TABLE event_categories ENABLE ROW LEVEL SECURITY;
+
+-- Allow public read access to event categories
+CREATE POLICY "Event categories are viewable by everyone." 
+ON event_categories FOR SELECT 
+USING (true);
+
 -- ------------------------------------------------------------
 -- Add category reference to events
 -- ------------------------------------------------------------
