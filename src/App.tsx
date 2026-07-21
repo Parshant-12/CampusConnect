@@ -1,5 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
+ feat/wasm-image-compression
 import { useEmailVerification } from "./hooks/useEmailVerification";
+
+import Directory from "./routes/Directory";
+ main
 
 import {
   createBrowserRouter,
@@ -142,6 +146,7 @@ const router = createBrowserRouter(
       <Route path="/settings" element={<Settings />} />
       <Route path="/messages" element={<MessagesRoute />} />
       <Route path="/admin/clubs/pending" element={<PendingClubsAdmin />} />
+      <Route path="/directory" element={<Directory />} />
     </Route>,
   ),
 );
