@@ -1,5 +1,34 @@
-import { ImagePlus, Send, X, Check } from "lucide-react";
-import { useState, useRef } from "react";
+import { ImagePlus, Loader2, Send, X } from "lucide-react";
+import { useRef, useState } from "react";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { useMutation } from "@/hooks/useReactQueryReplacement";
+import { createClient } from "@/lib/supabase/client";
+
+const MAX_DESCRIPTION_LENGTH = 2000;
+const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 interface BugReportModalProps {
   open: boolean;
@@ -7,16 +36,14 @@ interface BugReportModalProps {
 }
 
 export function BugReportModal({ open, onOpenChange }: BugReportModalProps) {
-  const [category, setCategory] = useState("bug");
-  const [message, setMessage] = useState("");
-
-  // NEW: State and Ref for file uploads
+  const [category, setCategory] = useState("bug"); // NEW: Category state
+  const [description, setDescription] = useState("");
   const [screenshot, setScreenshot] = useState<File | null>(null);
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const supabase = createClient();
 
-  if (!open) return null;
-
-  // Dynamic text based on the selected category
+  // NEW: Dynamic text engine based on category
   const contentMap: Record<
     string,
     { title: string; subtitle: string; label: string; placeholder: string }
@@ -45,55 +72,137 @@ export function BugReportModal({ open, onOpenChange }: BugReportModalProps) {
 
   const currentContent = contentMap[category];
 
-  // NEW: Handle file selection
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setScreenshot(e.target.files[0]);
-    }
-  };
+  const submitReport = useMutation({
+    mutationFn: async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("You must be logged in to submit feedback.");
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    console.log("Submitted:", { category, message, screenshot });
+      let uploadedPath: string | null = null;
 
-    // Reset form after submission
-    setMessage("");
+      try {
+        let screenshotUrl: string | null = null;
+
+        if (screenshot) {
+          const ext = screenshot.name.split(".").pop()?.toLowerCase() ?? "png";
+          const filePath = `${user.id}/${crypto.randomUUID()}.${ext}`;
+          uploadedPath = filePath;
+
+          const { error: uploadError } = await supabase.storage
+            .from("bug-screenshots")
+            .upload(filePath, screenshot, { contentType: screenshot.type });
+          if (uploadError) throw new Error(uploadError.message);
+
+          const {
+            data: { publicUrl },
+          } = supabase.storage.from("bug-screenshots").getPublicUrl(filePath);
+
+          screenshotUrl = publicUrl;
+        }
+
+        const { error: insertError } = await supabase.functions.invoke("submit-bug-report", {
+          body: {
+            category,
+            description: description.trim(),
+            screenshot_url: screenshotUrl,
+          },
+        });
+        if (insertError) throw new Error(insertError.message);
+      } catch (err) {
+        // Best-effort cleanup: remove orphaned screenshot on failure
+        if (uploadedPath) {
+          await supabase.storage
+            .from("bug-screenshots")
+            .remove([uploadedPath])
+            .catch(() => {});
+        }
+        throw err;
+      }
+    },
+    onSuccess: () => {
+      toast.success("Feedback submitted. Thank you!");
+      resetForm();
+      onOpenChange(false);
+    },
+    onError: (error: Error) => {
+      console.error("[BugReportModal] Submit failed:", error);
+      toast.error(error.message || "Failed to submit report. Please try again.");
+    },
+  });
+
+  function resetForm() {
+    setCategory("bug");
+    setDescription("");
     setScreenshot(null);
-    onOpenChange(false);
-  };
+    setPreviewDataUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      toast.error("Only JPG, PNG, and WEBP images are allowed.");
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      toast.error("Screenshot must be under 5 MB.");
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setScreenshot(file);
+      setPreviewDataUrl(dataUrl);
+    } catch {
+      toast.error("Failed to read screenshot. Please try again.");
+    }
+  }
+
+  function removeScreenshot() {
+    setScreenshot(null);
+    setPreviewDataUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  const canSubmit = description.trim().length > 0 && !submitReport.isPending;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      {/* Modal Container */}
-      <div className="relative w-full max-w-lg bg-[#8b5cf6] p-6 shadow-[8px_8px_0_0_rgba(0,0,0,1)] border-2 border-black">
-        {/* Close Button */}
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        onOpenChange(nextOpen);
+        if (!nextOpen) resetForm();
+      }}
+    >
+      <DialogTrigger asChild>
         <button
           type="button"
-          onClick={() => {
-            onOpenChange(false);
-            setScreenshot(null); // Clear file if they close without submitting
-          }}
-          className="absolute cursor-pointer right-4 top-4 text-black transition-transform hover:scale-110"
+          className="font-mono text-[10px] font-bold uppercase tracking-widest text-black underline-offset-4 hover:underline"
         >
-          <X className="h-5 w-5" />
+          Feedback
         </button>
+      </DialogTrigger>
 
-        {/* Dynamic Header */}
-        <h2 className="mb-1 font-display text-2xl font-bold text-indigo-950">
-          {currentContent.title}
-        </h2>
-        <p className="mb-6 font-mono text-sm text-indigo-950">{currentContent.subtitle}</p>
+      <DialogContent className="neu-border neu-shadow bg-violet-500 sm:max-w-lg text-black">
+        <DialogHeader>
+          <DialogTitle className="text-blue-900">{currentContent.title}</DialogTitle>
+          <DialogDescription className="text-black">{currentContent.subtitle}</DialogDescription>
+        </DialogHeader>
 
-        <form onSubmit={handleSubmit}>
-          {/* Category Dropdown */}
-          <div className="mb-4 text-left">
-            <label className="mb-2 block font-mono text-sm font-bold text-purple-900">
+        <div className="space-y-4">
+          {/* NEW: Category Dropdown */}
+          <div className="space-y-2">
+            <Label htmlFor="feedback-category" className="text-red-900">
               Feedback Type
-            </label>
+            </Label>
             <select
+              id="feedback-category"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
-              className="w-full cursor-pointer border-2 border-black bg-white p-2 font-mono text-sm text-black shadow-[2px_2px_0_0_rgba(0,0,0,1)] focus:outline-none focus:ring-2 focus:ring-black"
+              className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             >
               <option value="bug">🐛 Report a Bug</option>
               <option value="feature">💡 Request a Feature</option>
@@ -101,81 +210,87 @@ export function BugReportModal({ open, onOpenChange }: BugReportModalProps) {
             </select>
           </div>
 
-          {/* Dynamic Textarea */}
-          <div className="mb-1 text-left">
-            <label className="mb-2 block font-mono text-sm font-bold text-purple-900">
+          <div className="space-y-2">
+            <Label htmlFor="bug-description" className="text-red-900">
               {currentContent.label}
-            </label>
-            <textarea
-              required
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              maxLength={2000}
+            </Label>
+            <Textarea
+              id="bug-description"
               placeholder={currentContent.placeholder}
-              className="h-32 w-full resize-none border-2 border-black bg-white p-3 font-mono text-sm text-black focus:outline-none focus:ring-2 focus:ring-black"
+              rows={5}
+              maxLength={MAX_DESCRIPTION_LENGTH}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="bg-white"
             />
+            <p className="text-right text-xs text-black">
+              {description.length}/{MAX_DESCRIPTION_LENGTH}
+            </p>
           </div>
 
-          {/* Character Count */}
-          <div className="mb-4 text-right font-mono text-xs font-bold text-indigo-950">
-            {message.length}/2000
-          </div>
+          <div className="space-y-2">
+            <Label className="text-red-900">Screenshot (optional)</Label>
 
-          {/* NEW: Working File Upload */}
-          <div className="mb-6 text-left">
-            <label className="mb-2 block font-mono text-sm font-bold text-purple-900">
-              Screenshot (optional)
-            </label>
-
-            {/* Hidden Input */}
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-            />
-
-            {/* Conditional Rendering: Show upload button OR file name */}
-            {!screenshot ? (
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex cursor-pointer items-center gap-2 bg-white px-4 py-2 font-mono text-sm font-bold text-black transition-transform hover:translate-x-[-2px] hover:translate-y-[-2px] shadow-[4px_4px_0_0_rgba(0,0,0,1)] border-2 border-black"
-              >
-                <ImagePlus className="h-4 w-4" />
-                UPLOAD SCREENSHOT
-              </button>
-            ) : (
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 bg-white/40 px-3 py-2 border-2 border-black font-mono text-xs font-bold text-indigo-950">
-                  <Check className="h-4 w-4 text-green-900" />
-                  <span className="max-w-[200px] truncate">{screenshot.name}</span>
-                </div>
+            {previewDataUrl ? (
+              <div className="relative inline-block">
+                <img
+                  src={previewDataUrl}
+                  alt="Screenshot preview"
+                  className="max-h-40 rounded-md border-2 border-black object-contain"
+                />
                 <button
                   type="button"
-                  onClick={() => setScreenshot(null)}
-                  className="font-mono cursor-pointer text-xs font-bold text-indigo-950 underline hover:text-black"
+                  aria-label="Remove screenshot"
+                  onClick={removeScreenshot}
+                  className="absolute -right-2 -top-2 rounded-full bg-black p-1 text-white hover:bg-red-600"
                 >
-                  Remove
+                  <X className="h-3 w-3" />
                 </button>
+              </div>
+            ) : (
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={handleFileChange}
+                  className="hidden"
+                  id="bug-screenshot"
+                />
+                <Button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="bg-white cursor-pointer text-black font-bold uppercase border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] hover:bg-gray-50 hover:text-black hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[6px_6px_0_0_rgba(0,0,0,1)] transition-all"
+                >
+                  <ImagePlus className="h-4 w-4 mr-2" />
+                  UPLOAD SCREENSHOT
+                </Button>
               </div>
             )}
           </div>
+        </div>
 
-          {/* Submit Button */}
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={message.trim().length === 0}
-              className="flex cursor-pointer items-center gap-2 bg-white/30 px-6 py-2 font-mono text-sm font-bold text-black transition-all hover:bg-white/50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white/30 border-2 border-transparent disabled:border-transparent"
-            >
-              <Send className="h-4 w-4" />
-              SUBMIT REPORT
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <DialogFooter className="pt-2">
+          <Button
+            type="button"
+            onClick={() => submitReport.mutate()}
+            disabled={!canSubmit}
+            className="w-full cursor-pointer sm:w-auto bg-black text-white font-bold uppercase border-2 border-black shadow-[4px_4px_0_0_rgba(0,0,0,1)] hover:bg-gray-800 hover:text-white hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[6px_6px_0_0_rgba(0,0,0,1)] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-x-0 disabled:hover:translate-y-0 disabled:hover:shadow-[4px_4px_0_0_rgba(0,0,0,1)]"
+          >
+            {submitReport.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Submitting...
+              </>
+            ) : (
+              <>
+                <Send className="h-4 w-4 mr-2" />
+                Submit Report
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
